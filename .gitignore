@@ -1,0 +1,28 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# 生成产物
+*.yml.out
+*.yaml.out
+output/
+
+# 订阅缓存 / 本地测试文件
+local-test/
+*.yml
+*.yaml
+*.Verge.yml
+*.subscription.yaml
+*.sub.yaml
+
+# 覆写脚本输出
+*.override.js
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI
+.playwright-mcp/
+
