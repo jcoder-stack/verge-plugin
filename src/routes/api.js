@@ -70,8 +70,8 @@ router.post("/api/parse", (req, res) => {
 //   body: { yaml, format, relay, residentials, residentialGroup,
 //           directResidentials, directResidentialGroup, aiExitGroup,
 //           aiRules, dnsAntiLeak, dnsLan, dnsTun, portMappings, extensionScript }
-//   → format=script → { ok, format, script }
-//     format=yaml/clashmi → { ok, yaml }
+//   → format=script → { ok, format, script, notices }
+//     format=yaml/clashmi → { ok, yaml, notices }
 // ------------------------------------------------------------------
 router.post("/api/generate", (req, res) => {
   const { yaml: srcYaml, relay, residentials, directResidentials, portMappings, aiRules, dnsAntiLeak, dnsLan, dnsTun, extensionScript, format } = req.body || {};
