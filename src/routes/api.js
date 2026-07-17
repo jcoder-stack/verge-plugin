@@ -3,7 +3,7 @@
 const express = require("express");
 const yaml = require("js-yaml");
 const vm = require("vm");
-const { tryDecodeSubscription, summarize, buildYaml, buildOverrideScript } = require("../../core");
+const { tryDecodeSubscription, summarize, buildYaml, buildOverrideScript, resolveAIRules } = require("../../core");
 
 function vmRunHook(script, params) {
   const sandbox = { params, module: { exports: {} }, exports: {}, console };
@@ -91,6 +91,13 @@ router.post("/api/generate", (req, res) => {
   if (Array.isArray(directResidentials) && directResidentials.some((r) => r && r.name)) aiExitMembers.push(directResidentialGroup);
   if (Array.isArray(residentials) && residentials.some((r) => r && r.name)) aiExitMembers.push(residentialGroup);
 
+  // AI 出口目标回退链：在此解析，与 verge-extension 的 localGenerate 共用同一实现。
+  // 无可用目标 → 不写入 AI 规则、不阻断生成，转成 notices 提示。
+  const { aiRules: resolvedAIRules, skipped: aiSkipped } = resolveAIRules({
+    aiRules, aiExitGroup, residentialGroup, directResidentialGroup, residentials, directResidentials,
+  });
+  const notices = aiSkipped ? ["AI 规则未写入：未配置任何住宅出口（直连住宅或中转住宅）"] : [];
+
   // 目标引用完整性校验：AI target / port target 必须能解析成 订阅节点/分组/中转组/将要新增的住宅节点 之一
   {
     const knownNames = new Set();
@@ -115,11 +122,11 @@ router.post("/api/generate", (req, res) => {
       } catch {}
     }
     const missing = [];
-    if (aiRules && aiRules.target && knownNames.size > 0 && !knownNames.has(aiRules.target)) {
+    if (resolvedAIRules && resolvedAIRules.target && knownNames.size > 0 && !knownNames.has(resolvedAIRules.target)) {
       if (!srcYaml) {
         // Script 路径：只校验中转组/住宅节点，无法校验订阅端，所以只警告，不拦截
       } else {
-        missing.push(`AI 出口目标 "${aiRules.target}"`);
+        missing.push(`AI 出口目标 "${resolvedAIRules.target}"`);
       }
     }
     if (Array.isArray(portMappings) && srcYaml) {
@@ -150,8 +157,8 @@ router.post("/api/generate", (req, res) => {
   // ===== 输出 JS 覆写脚本 =====
   if (outputFormat === "script") {
     try {
-      const script = buildOverrideScript({ relay, residentials, residentialGroup, directResidentials, directResidentialGroup, aiExitGroup, portMappings, aiRules, dnsAntiLeak, dnsLan, dnsTun, extensionScript });
-      return res.json({ ok: true, format: "script", script });
+      const script = buildOverrideScript({ relay, residentials, residentialGroup, directResidentials, directResidentialGroup, aiExitGroup, portMappings, aiRules: resolvedAIRules, dnsAntiLeak, dnsLan, dnsTun, extensionScript });
+      return res.json({ ok: true, format: "script", script, notices });
     } catch (e) {
       return res.status(500).json({ error: `build script failed: ${e.message}` });
     }
@@ -161,10 +168,10 @@ router.post("/api/generate", (req, res) => {
   try {
     const outYaml = buildYaml({
       srcYaml, relay, residentials, residentialGroup, directResidentials, directResidentialGroup,
-      aiExitGroup, aiRules, dnsAntiLeak, dnsLan, dnsTun, portMappings, extensionScript, outputFormat,
+      aiExitGroup, aiRules: resolvedAIRules, dnsAntiLeak, dnsLan, dnsTun, portMappings, extensionScript, outputFormat,
     }, { runHook: vmRunHook });
-    if (outputFormat === "clashmi") return res.json({ ok: true, format: "clashmi", yaml: outYaml });
-    return res.json({ ok: true, yaml: outYaml });
+    if (outputFormat === "clashmi") return res.json({ ok: true, format: "clashmi", yaml: outYaml, notices });
+    return res.json({ ok: true, yaml: outYaml, notices });
   } catch (e) {
     return res.status(e.status || 500).json({ error: e.message });
   }

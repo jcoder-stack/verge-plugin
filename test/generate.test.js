@@ -229,3 +229,32 @@ test("AI 规则顺序：RULE-SET（规则集 URL）在前，DOMAIN 在后", asyn
   assert.ok(domIdx >= 0, "应有 DOMAIN-SUFFIX");
   assert.ok(rsIdx < domIdx, "RULE-SET 应在 DOMAIN 之前");
 });
+
+const SUB_YAML_AI = "proxies:\n  - { name: vps1, type: ss, server: 1.2.3.4, port: 443 }\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n";
+const DIRECT_NODE_AI = { name: "US-ATT", type: "ss", server: "9.9.9.9", port: 8388 };
+
+test("/api/generate: aiRules.target 为空 + 有直连住宅 → 回退到直连住宅组", async () => {
+  const { status, json } = await generate({
+    yaml: SUB_YAML_AI,
+    relay: { name: "高速中转", type: "select", proxies: ["vps1"] },
+    directResidentials: [DIRECT_NODE_AI],
+    directResidentialGroup: "直连住宅",
+    aiExitGroup: "",
+    aiRules: { target: "", domains: ["claude.ai"], providers: [] },
+  });
+  assert.strictEqual(status, 200);
+  assert.match(json.yaml, /DOMAIN-SUFFIX,claude\.ai,直连住宅/);
+});
+
+test("/api/generate: 有 AI 规则 + 无任何住宅 → 200 且带提示，不阻断", async () => {
+  const { status, json } = await generate({
+    yaml: SUB_YAML_AI,
+    relay: { name: "高速中转", type: "select", proxies: ["vps1"] },
+    aiExitGroup: "AI 总出口",
+    aiRules: { target: "", domains: ["claude.ai"], providers: [] },
+  });
+  assert.strictEqual(status, 200);
+  assert.doesNotMatch(json.yaml, /claude\.ai/);
+  assert.ok(Array.isArray(json.notices), "应带回 notices");
+  assert.match(json.notices.join("；"), /AI 规则未写入/);
+});
