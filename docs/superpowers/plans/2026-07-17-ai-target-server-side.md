@@ -383,6 +383,22 @@ aiDomains 出厂预填导致 hasAIRules 恒为真，据其硬拦截会让
 app.js 只收集不解析；无目标时由 notices 提示而非报错。"
 ```
 
+- [ ] **Step 8: 推送 core**
+
+**这一步不可省。** Task 4 会用 `git clone` 把 core 拉进 `verge-plugin`，拿到的是 **origin 上**的代码——Task 1/2 的提交若停留在本地，Task 4 克隆到的将是不含 `resolveAIRules` 的旧 core，随即失败。
+
+```bash
+git push origin main
+```
+
+Expected: 快进推送成功（origin/main 此前在 `93f4769`，非 force）。若被拒，**停下来报告**，不要 force。
+
+```bash
+git rev-list --count origin/main..main
+```
+
+Expected: `0`
+
 ---
 
 ### Task 3: `verge-extension` 生成入口接入
