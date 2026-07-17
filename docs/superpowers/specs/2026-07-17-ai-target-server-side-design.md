@@ -43,39 +43,73 @@ const aiTargetFinal = resolveTarget
 
 这样彻底绕开「浏览器加载 CommonJS 模块」的问题：解析发生在两个宿主都已具备 `require` 能力的位置。
 
+### 0. 前置修正：AI 规则无目标时不得阻断生成
+
+**用户实测发现的回归（本设计的直接触发因素）。**
+
+`verge-extension` 0.1.1 中 `core/web/app.js:378` 有：
+
+```js
+const hasAIRules = aiDomains.length > 0 || aiProviders.length > 0;
+if (hasAIRules && !aiTargetFinal) {
+  return { error: "填写了 AI 规则，但没有任何可用的出口目标：请在「2.5 直连住宅订阅」勾选直连节点，或在上方添加中转住宅，再生成。" };
+}
+```
+
+`aiDomains` 文本框**出厂预填**着默认的 Claude/GPT 规则（`core/web/index.html:161+`），故 `hasAIRules` 对任何未改动该框的用户恒为 `true`。这条校验把「存在 AI 规则」等同于「用户想要 AI 分流」，但预填意味着用户**从未表达过该意图**。
+
+后果：一个只用「中转 + DNS」、不需要任何住宅出口的正当配置会被硬拦截，且提示语要求用户去勾选他并不想要的直连住宅。已在浏览器中稳定复现（1 个中转节点、零住宅、AI 规则保持预填 → 点生成 → 被拦，无产出）。
+
+原 bug 的病根是**静默**，不是**没拦住**。修复方向应是「让它出声」，而非「拦住不放行」。
+
+**规则：**
+
+- 生成的唯一门槛沿用 `app.js:390` 的既有校验——中转节点、中转住宅、直连住宅**三者皆无**才拦截。有其一即放行。
+- AI 规则解析不出目标时：**不写入 AI 规则，不阻断生成，但明确提示**。
+- 删除 `app.js:378` 这条 AI 专属硬拦截。
+
+「直连住宅」自始至终是可选项。
+
 ### 1. `core/lib/ai-target.js` 新增 `resolveAIRules()`
 
 保留现有纯函数 `resolveAITarget()` 不动（已有 13 个单测覆盖），在其上新增一层供生成入口调用：
 
 ```js
 resolveAIRules({ aiRules, aiExitGroup, residentialGroup, directResidentialGroup, residentials, directResidentials })
-  → { ...aiRules, target } | null
-  → 无可用出口目标时抛 Error（带 .status = 400）
+  → { aiRules: { ...aiRules, target } | null, skipped: boolean }
 ```
 
 行为：
 
-- `aiRules` 为空、或其 `domains`/`providers` 均为空 → 返回 `null`（用户没填规则，正常）
+- `aiRules` 为空、或其 `domains`/`providers` 均为空 → `{ aiRules: null, skipped: false }`（用户没填规则，正常）
 - 否则调 `resolveAITarget()` 求出 target
-- target 为 `null` → 抛错（有规则却无处可去）
-- 否则返回 target 已填好的新 `aiRules`
+- target 为 `null` → `{ aiRules: null, skipped: true }`（有规则但无处可去 → 不写入，由调用方转成提示）
+- 否则 → `{ aiRules: { ...aiRules, target }, skipped: false }`
+
+**不抛错。** 依据第 0 节：无目标不是错误，是「这批规则本次不适用」。`skipped` 与 `aiRules: null` 分开表达，正是为了把「用户没填规则」（无需提示）和「填了但无处可去」（必须提示）区分开——后者若不提示，就退回成最初那个静默丢弃的 bug。
 
 `hasResidentials` / `hasDirectResidentials` 用 `.some(r => r && r.name)` 判定，与 `core/lib/generate-yaml.js:63-66` 的 `aiExitMembers` 判定一致。这顺带消除了原方案中 `app.js` 用 `length > 0`、生成器用 `.some(...)` 的判定不对称。
 
-**错误类型用带 `.status` 的普通 `Error`，不引入 `HttpError`。** 理由：`api.js:169` 已有 `res.status(e.status || 500)`，`transport-ext.js` 也已 `catch` 后重抛——两边都能直接消费，且 `ai-target.js` 得以保持不依赖 `generate-yaml.js`（后者会传递性引入 js-yaml）。
-
 ### 2. 两个生成入口接入
 
-`verge-plugin/src/routes/api.js` 与 `verge-extension/src/transport-ext.js` 各自在算出 `aiExitGroup` 之后、**完整性校验之前**调用 `resolveAIRules()`，后续一律使用其返回值而非原始 `aiRules`。
+`verge-plugin/src/routes/api.js` 与 `verge-extension/src/transport-ext.js` 各自在算出 `aiExitGroup` 之后、**完整性校验之前**调用 `resolveAIRules()`，后续一律使用其返回的 `aiRules` 而非原始值。
 
 顺序很关键：解析必须早于完整性校验（`api.js:118` / `transport-ext.js:105`），这样被校验的是**已解析的** target，而不是可能为空的原始值。这实际上收紧了校验——回退链选出的组名也会被完整性校验兜一道。
+
+`skipped` 为 `true` 时，在响应中带回提示：
+
+```js
+{ ok: true, yaml: outYaml, notices: ["AI 规则未写入：未配置任何住宅出口（直连住宅或中转住宅）"] }
+```
+
+`notices` 是可选数组字段，无提示时可省略。两个宿主返回的形状一致，故 `app.js` 只需一套展示逻辑。Script 输出路径同样带回。
 
 ### 3. `core/web/app.js` 简化
 
 删除：
 
 - `resolveTarget` 的取用与调用（连同 `: (aiTarget || aiExitGroup)` 兜底整块）
-- 客户端的「填写了 AI 规则，但没有任何可用的出口目标」校验
+- 「填写了 AI 规则，但没有任何可用的出口目标」这条 AI 专属硬拦截（见第 0 节）
 
 改为直接组装并原样发送：
 
@@ -85,7 +119,14 @@ const aiRules = hasAIRules ? { target: aiTarget, domains: aiDomains, providers: 
 
 `target` 允许为空字符串——由服务端解析。`aiExitGroup` 仍按原样发送（未启用时为 `""`）。
 
-错误改由服务端返回：`app.js` 既有的 `apiGenerate` 调用会抛出并展示服务端错误信息，无需客户端重复实现这条判断。
+`app.js:390` 的既有「至少要有一个出口来源」校验**保持不动**，它是生成的唯一门槛。删掉 AI 专属拦截后，它会自然成为该场景下先触发的那条——这同时消除了原方案中「报错顺序不当」的问题。
+
+生成成功后展示服务端带回的提示：
+
+```js
+const notices = (data.notices || []).join("；");
+$("genStatus").textContent = `生成成功 [${fmt}] (${bytes} 字节)` + (notices ? ` —— ${notices}` : "");
+```
 
 副作用：`app.js` 不再依赖 `window.VergeTransport.resolveAITarget`，两个宿主的 transport 契约重新对齐。
 
@@ -103,14 +144,18 @@ const aiRules = hasAIRules ? { target: aiTarget, domains: aiDomains, providers: 
 
 ```
 用户输入
-  → core/web/app.js 读 DOM，原样发送 { aiRules:{target(可空), domains, providers}, aiExitGroup, ... }
+  → core/web/app.js 读 DOM
+     ├─ 校验：中转/中转住宅/直连住宅 三者皆无 → 拦截（唯一门槛）
+     └─ 原样发送 { aiRules:{target(可空), domains, providers}, aiExitGroup, ... }
   → 生成入口（二选一）:
       verge-extension: src/transport-ext.js localGenerate()
       verge-plugin:    src/routes/api.js   POST /api/generate
-    ├─ resolveAIRules()  ← 回退链在此解析；无出口可用则抛 400
+    ├─ resolveAIRules()  ← 回退链在此解析；无出口可用 → aiRules=null + skipped=true
     ├─ 目标引用完整性校验（校验的是已解析的 target）
     ├─ 死循环防御
-    └─ core/lib/generate-yaml.js  或  core/lib/generate-script.js
+    ├─ core/lib/generate-yaml.js  或  core/lib/generate-script.js
+    └─ 响应带 notices[]（skipped 时）
+  → app.js 在状态栏展示 notices
 ```
 
 ## 顺带修掉的既有问题
@@ -119,31 +164,38 @@ const aiRules = hasAIRules ? { target: aiTarget, domains: aiDomains, providers: 
 
 | 原 Minor | 如何消除 |
 | --- | --- |
-| `app.js` 报错顺序：AI 校验抢在「至少要有一个出口来源」之前 | 客户端 AI 校验整块删除，出口来源校验自然先触发 |
+| `app.js` 报错顺序：AI 校验抢在「至少要有一个出口来源」之前 | AI 专属拦截整块删除（第 0 节），出口来源校验成为唯一门槛 |
 | `app.js` 的 `: (aiTarget \|\| aiExitGroup)` 死代码兜底 | 整块删除 |
 | `app.js` 用 `length > 0` 与 `generate-yaml.js` 的 `.some(r => r && r.name)` 判定不对称 | 判定收归 `resolveAIRules()` 一处，统一用 `.some(...)` |
+
+值得记下的是：这三个 Minor 当时都被判为「可发布」，而第一个（报错顺序）正是用户实测撞上的那个回归的一体两面——审查方准确指出了「预填导致 `hasAIRules` 恒真」这一事实，只是把后果估轻了，判成观感问题而非阻断问题。
 
 ## 测试
 
 **`core/test/ai-target.test.js`**（补充，现有 13 例不动）：
 
-- `aiRules` 为 `null` → 返回 `null`
-- `aiRules.domains` 与 `providers` 均为空 → 返回 `null`
-- `aiRules.target` 已填 → 原样返回该 target
+- `aiRules` 为 `null` → `{ aiRules: null, skipped: false }`
+- `aiRules.domains` 与 `providers` 均为空 → `{ aiRules: null, skipped: false }`
+- `aiRules.target` 已填 → 原样返回该 target，`skipped: false`
 - `target` 空 + 启用总出口组 + 有直连 → target 为总出口组名
 - `target` 空 + 未启用总出口组 + 仅有直连 → target 为直连住宅组名
 - `target` 空 + 未启用总出口组 + 仅有中转 → target 为住宅节点组名
-- `target` 空 + 无任何住宅 → 抛错，且 `.status === 400`
+- **`target` 空 + 无任何住宅 → `{ aiRules: null, skipped: true }`，不抛错**（第 0 节的核心断言）
 - `directResidentials` 含无 `name` 的条目 → 不计入成员（验证判定与生成器一致）
 
 **`verge-extension/test/transport-ext.test.js`**（改写原有的 `resolveAITarget` 导出断言）：
 
 - `localGenerate` 收到 `aiRules.target` 为空 + 有直连住宅 → 产出的 YAML 中 AI 规则指向直连住宅组
+- `localGenerate` 收到 AI 规则 + 无任何住宅、但有中转 → **成功产出 YAML**（不抛错），YAML 中无 AI 规则，且 `notices` 含「AI 规则未写入」
 
 **`verge-plugin/test/generate.test.js`**（补充）：
 
 - `POST /api/generate`，`aiRules.target` 为空 + 有直连住宅 → 200，YAML 中 AI 规则指向直连住宅组
-- `POST /api/generate`，有 AI 规则 + 无任何住宅 → 400，错误信息含「没有任何可用的出口目标」
+- `POST /api/generate`，有 AI 规则 + 无任何住宅、但有中转 → **200**（非 400），YAML 中无 AI 规则，响应 `notices` 含「AI 规则未写入」
+
+**浏览器实测**（控制方执行，自动化测试覆盖不到）：
+
+- 复现用户场景：仅勾 1 个中转节点、零住宅、AI 规则保持预填 → 点生成 → **成功产出配置**，状态栏显示「AI 规则未写入」提示。这是本次回归的验收判据。
 
 ## 实施注意
 
@@ -155,7 +207,9 @@ const aiRules = hasAIRules ? { target: aiTarget, domains: aiDomains, providers: 
 
 `verge-plugin/CLAUDE.md` 约定：提交信息用 Conventional Commits，**不加 `Co-Authored-By`**，且不得出现 Claude 相关字样。该约定仅适用于 `verge-plugin` 仓库。
 
-`verge-extension` 已发布 0.1.1（含旧方案）。本次改动后需重新打包发布 0.1.2——0.1.1 在 `verge-plugin` 场景下回退链不生效，但在扩展自身场景下功能正确，故非紧急撤回。
+`verge-extension` 已发布 0.1.1（含旧方案）。本次改动后需重新打包发布 0.1.2。
+
+**0.1.1 带有第 0 节所述的阻断性回归**：无住宅出口的用户无法生成配置。这比「verge-plugin 回退链不生效」严重得多，0.1.2 应尽快发布。若 0.1.1 已上架商店，可考虑先下架或加急替换。
 
 ## 不做的事
 
