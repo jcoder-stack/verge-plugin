@@ -258,3 +258,19 @@ test("/api/generate: 有 AI 规则 + 无任何住宅 → 200 且带提示，不�
   assert.ok(Array.isArray(json.notices), "应带回 notices");
   assert.match(json.notices.join("；"), /AI 规则未写入/);
 });
+
+// 自环防御下沉到 core 后，两条输出路径都须仍返回 400 而非 500
+test("POST /api/generate: 自环配置在 yaml 与 script 两条路径都返回 400", async () => {
+  const body = {
+    yaml: "proxies:\n  - {name: vps1, type: ss, server: 1.2.3.4, port: 443}\nproxy-groups: []\nrules: []\n",
+    relay: { name: "高速中转", type: "select", proxies: ["vps1", "住宅-1"] },
+    residentials: [{ name: "住宅-1", type: "socks5", server: "h", port: 1, username: "u", password: "p" }],
+    residentialGroup: "住宅节点",
+  };
+  for (const format of ["yaml", "script"]) {
+    const r = await post("/api/generate", { ...body, format });
+    assert.strictEqual(r.status, 400, `${format} 路径应返回 400`);
+    assert.match(r.json.error, /dialer-proxy 死循环/, `${format} 路径错误信息应指出自环`);
+    assert.doesNotMatch(r.json.error, /build script failed/, `${format} 路径不应带内部前缀`);
+  }
+});

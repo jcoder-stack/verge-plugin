@@ -143,16 +143,7 @@ router.post("/api/generate", (req, res) => {
     }
   }
 
-  // 死循环防御（两种输出都需要检查）
-  if (relay && Array.isArray(relay.proxies) && Array.isArray(residentials)) {
-    const residentialNames = new Set(residentials.filter((r) => r && r.name).map((r) => r.name));
-    const conflict = relay.proxies.filter((n) => residentialNames.has(n));
-    if (conflict.length > 0) {
-      return res.status(400).json({
-        error: `中转组候选包含住宅节点名 [${conflict.join(", ")}]，会导致 dialer-proxy 死循环，请移除`,
-      });
-    }
-  }
+  // 死循环防御由 core 的 assertNoDialerLoop 统一负责，两条输出路径都会被拦
 
   // ===== 输出 JS 覆写脚本 =====
   if (outputFormat === "script") {
@@ -160,6 +151,8 @@ router.post("/api/generate", (req, res) => {
       const script = buildOverrideScript({ relay, residentials, residentialGroup, directResidentials, directResidentialGroup, aiExitGroup, portMappings, aiRules: resolvedAIRules, dnsAntiLeak, dnsLan, dnsTun, dnsPolicyCollapse, extensionScript });
       return res.json({ ok: true, format: "script", script, notices });
     } catch (e) {
+      // HttpError 带语义状态码（如自环校验的 400），不应被压成 500
+      if (e.status) return res.status(e.status).json({ error: e.message });
       return res.status(500).json({ error: `build script failed: ${e.message}` });
     }
   }
