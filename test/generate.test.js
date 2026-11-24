@@ -274,3 +274,15 @@ test("POST /api/generate: 自环配置在 yaml 与 script 两条路径都返回 
     assert.doesNotMatch(r.json.error, /build script failed/, `${format} 路径不应带内部前缀`);
   }
 });
+
+test("POST /api/generate 透传 stunGuard 与 dnsViaAiExit", async () => {
+  const { json } = await generate({
+    format: "script",
+    relay: { name: "高速中转", type: "select", proxies: ["vps1"] },
+    residentials: [{ name: "住宅-1", type: "socks5", server: "h", port: 1 }],
+    aiExitGroup: "AI 总出口",
+    dnsAntiLeak: true, stunGuard: true, dnsViaAiExit: true,
+  });
+  assert.ok(json.script.includes("19302-19309)),AI 总出口"));
+  assert.ok(json.script.includes("https://8.8.8.8/dns-query#AI 总出口"));
+});

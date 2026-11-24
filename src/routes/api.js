@@ -69,12 +69,12 @@ router.post("/api/parse", (req, res) => {
 // POST /api/generate
 //   body: { yaml, format, relay, residentials, residentialGroup,
 //           directResidentials, directResidentialGroup, aiExitGroup,
-//           aiRules, dnsAntiLeak, dnsLan, dnsTun, dnsPolicyCollapse, portMappings, extensionScript }
+//           aiRules, dnsAntiLeak, dnsLan, dnsTun, dnsViaAiExit, stunGuard, dnsPolicyCollapse, portMappings, extensionScript }
 //   → format=script → { ok, format, script, notices }
 //     format=yaml/clashmi → { ok, yaml, notices }
 // ------------------------------------------------------------------
 router.post("/api/generate", (req, res) => {
-  const { yaml: srcYaml, relay, residentials, directResidentials, portMappings, aiRules, dnsAntiLeak, dnsLan, dnsTun, dnsPolicyCollapse, extensionScript, format } = req.body || {};
+  const { yaml: srcYaml, relay, residentials, directResidentials, portMappings, aiRules, dnsAntiLeak, dnsLan, dnsTun, dnsViaAiExit, stunGuard, dnsPolicyCollapse, extensionScript, format } = req.body || {};
   const outputFormat =
     format === "script" ? "script" : format === "clashmi" ? "clashmi" : "yaml";
   // 住宅节点 select 分组名：来自用户输入，缺省回退 "住宅节点"
@@ -148,7 +148,7 @@ router.post("/api/generate", (req, res) => {
   // ===== 输出 JS 覆写脚本 =====
   if (outputFormat === "script") {
     try {
-      const script = buildOverrideScript({ relay, residentials, residentialGroup, directResidentials, directResidentialGroup, aiExitGroup, portMappings, aiRules: resolvedAIRules, dnsAntiLeak, dnsLan, dnsTun, dnsPolicyCollapse, extensionScript });
+      const script = buildOverrideScript({ relay, residentials, residentialGroup, directResidentials, directResidentialGroup, aiExitGroup, portMappings, aiRules: resolvedAIRules, dnsAntiLeak, dnsLan, dnsTun, dnsViaAiExit, stunGuard, dnsPolicyCollapse, extensionScript });
       return res.json({ ok: true, format: "script", script, notices });
     } catch (e) {
       // HttpError 带语义状态码（如自环校验的 400），不应被压成 500
@@ -161,7 +161,7 @@ router.post("/api/generate", (req, res) => {
   try {
     const outYaml = buildYaml({
       srcYaml, relay, residentials, residentialGroup, directResidentials, directResidentialGroup,
-      aiExitGroup, aiRules: resolvedAIRules, dnsAntiLeak, dnsLan, dnsTun, dnsPolicyCollapse, portMappings, extensionScript, outputFormat,
+      aiExitGroup, aiRules: resolvedAIRules, dnsAntiLeak, dnsLan, dnsTun, dnsViaAiExit, stunGuard, dnsPolicyCollapse, portMappings, extensionScript, outputFormat,
     }, { runHook: vmRunHook });
     if (outputFormat === "clashmi") return res.json({ ok: true, format: "clashmi", yaml: outYaml, notices });
     return res.json({ ok: true, yaml: outYaml, notices });
